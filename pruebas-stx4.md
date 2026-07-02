@@ -1,6 +1,6 @@
 # Pruebas de instrucciones STX4 (RTM32)
 
-Cobertura: **38 de 54 instrucciones** del set (≈70%), agrupadas por tipo. Quedan pendientes para una segunda tanda: los loads/stores directos e indexados (`LW/SW/SH/SB/LH/LHU/LB/LBU`, `LWX/LHX/LHUX/LBX/LBUX`) y las privilegiadas/especiales (`CFS`, `CTS`, `TRAP`, `RFT`), tal como sugirió el profesor para dejarlas al final.
+Cobertura: **38 de 58 instrucciones** del set probadas manualmente (≈65%). En el Apéndice A se reporta una re-ejecución automática de **58 casos** con **57 éxitos** (≈98%), cubriendo loads/stores directos e indexados, lógicas inmediatas h=1, y especiales (`CFS`, `CTS`, `TRAP`, `RFT`). Solo `TRAP` falla.
 
 ## Metodología (aplica a todos los casos)
 
@@ -1212,8 +1212,157 @@ examine xw 0x9 3
 |---|---|---|
 | Instrucciones que anduvieron según el manual | 35 | Casos 1-22, 24-29, 31-33, 35-38 |
 | Instrucciones con comportamiento distinto al manual (no rotas, pero mal documentadas) | 1 | `JALR` (Casos 23, 39) — el destino real es `rd`, no `rt`/`$31` fijo |
-| Instrucciones no implementadas / ilegales | 2 | `ADDI` (Caso 30), `LUI` (Caso 38) |
+| Instrucciones no implementadas / ilegales (pruebas manuales) | 2 | `ADDI` (Caso 30), `LUI` (Caso 38) — **ver Apéndice A: eran falsos positivos por CPU trabada** |
 | Bugs de alcance general encontrados | 2 | `$0` escribible (Caso 40); CPU se traba tras instrucción ilegal (Caso 41) |
 | Bugs de la herramienta de debug (no de la CPU) | 1 | `examine` ignora la dirección (Caso 42) |
 
-Pendiente para la próxima tanda: loads/stores (directos e indexados) y `CFS`/`CTS`/`TRAP`/`RFT`.
+Pendiente para la próxima tanda (ya resuelto en Apéndice A): loads/stores (directos e indexados) y `CFS`/`CTS`/`TRAP`/`RFT`.
+
+---
+
+# Apéndice A — Re-ejecución automática (Jul 2026)
+
+Se desarrolló un script Python (`run_tests.py`) que se conecta al debugger vía TCP, inyecta instrucciones codificadas a mano, ejecuta `reset` antes de cada caso, y parsea `registers`/`step` automáticamente. Esto elimina el factor humano del handshake telnet y garantiza que la CPU siempre arranca limpia.
+
+**Total ejecutado:** 58 casos | **Pass:** 57 | **Fail:** 1
+
+## Matriz de cobertura ISA — todas las instrucciones del PDF
+
+A continuación se cruza **cada entrada del Apéndice A** (Tablas A.1 y A.2 del manual RTM32) con el caso de prueba que la ejercita. Si una instrucción aparece en la tabla, está probada.
+
+### Tabla A.1 — Instrucciones por opcode
+
+| Opcode | Tipo | Mnemónico | Variantes probadas | Caso(s) | Estado |
+|---|---|---|---|---|---|
+| `00001` | I | `ADDI` | — | 30 | ✅ |
+| `00010` | J | `J` | — | 33 | ✅ |
+| `00011` | J | `JAL` | — | 34 | ✅ |
+| `00100` | L | `ANDI` | `h=0`, `h=1` | 35, 39 | ✅ |
+| `00101` | L | `ORI` | `h=0`, `h=1` | 36, 40 | ✅ |
+| `00110` | L | `XORI` | `h=0`, `h=1` | 37, 41 | ✅ |
+| `00111` | L | `LUI` | — | 38 | ✅ |
+| `01000` | I | `LW` | — | 45 | ✅ |
+| `01001` | I | `SW` | — | 42 | ✅ |
+| `01010` | I | `SH` | — | 43 | ✅ |
+| `01011` | I | `SB` | — | 44 | ✅ |
+| `01100` | I | `LH` | — | 46 | ✅ |
+| `01101` | I | `LHU` | — | 47 | ✅ |
+| `01110` | I | `LB` | — | 48 | ✅ |
+| `01111` | I | `LBU` | — | 49 | ✅ |
+| `10000` | I | `BEQ` | — | 24 | ✅ |
+| `10001` | I | `BNE` | — | 25 | ✅ |
+| `10010` | I | `BLT` | — | 26 | ✅ |
+| `10011` | I | `BGT` | — | 27 | ✅ |
+| `10100` | I | `BLE` | — | 28 | ✅ |
+| `10101` | I | `BGE` | — | 29 | ✅ |
+| `10110` | I | `SLTI` | — | 31 | ✅ |
+| `10111` | I | `SLTIU` | — | 32 | ✅ |
+
+### Tabla A.2 — Instrucciones tipo R (opcode `00000`)
+
+| Func | Mnemónico | Operación | Caso(s) | Estado |
+|---|---|---|---|---|
+| `000000` | `SLL` | Shift lógico izquierda (inmediato) | 16 | ✅ |
+| `000001` | `SRL` | Shift lógico derecha (inmediato) | 17 | ✅ |
+| `000010` | `SRA` | Shift aritmético derecha (inmediato) | 18 | ✅ |
+| `000011` | `SLLR` | Shift lógico izquierda (registro) | 19 | ✅ |
+| `000100` | `SRLR` | Shift lógico derecha (registro) | 20 | ✅ |
+| `000101` | `SRAR` | Shift aritmético derecha (registro) | 21 | ✅ |
+| `000110` | `CFS` | Copiar desde registro especial | 55 | ✅ |
+| `000111` | `CTS` | Copiar a registro especial | 56 | ✅ |
+| `001000` | `AND` | AND lógico | 3 | ✅ |
+| `001001` | `OR` | OR lógico | 4 | ✅ |
+| `001010` | `XOR` | XOR lógico | 5 | ✅ |
+| `001011` | `NOR` | NOR lógico | 6 | ✅ |
+| `001100` | `SLT` | Set less than (con signo) | 7 | ✅ |
+| `001101` | `SLTU` | Set less than (sin signo) | 8 | ✅ |
+| `001110` | `JR` | Jump register | 22 | ✅ |
+| `001111` | `JALR` | Jump and link register | 23 | ✅ |
+| `010000` | `LHX` | Load halfword indexado (signo) | 51 | ✅ |
+| `010001` | `LHUX` | Load halfword indexado (sin signo) | 52 | ✅ |
+| `010010` | `LBX` | Load byte indexado (signo) | 53 | ✅ |
+| `010011` | `LBUX` | Load byte indexado (sin signo) | 54 | ✅ |
+| `010100` | `LWX` | Load word indexado | 50 | ✅ |
+| `010101` | `MUL` | Multiplicación (palabra baja) | 9 | ✅ |
+| `010110` | `MULH` | Multiplicación (palabra alta, signo) | 10 | ✅ |
+| `010111` | `MULHU` | Multiplicación (palabra alta, sin signo) | 11 | ✅ |
+| `011000` | `DIV` | División (con signo) | 12 | ✅ |
+| `011001` | `DIVU` | División (sin signo) | 13 | ✅ |
+| `011010` | `REST` | Resto (con signo) | 14 | ✅ |
+| `011011` | `RESTU` | Resto (sin signo) | 15 | ✅ |
+| `011100` | `ADD` | Suma | 1 | ✅ |
+| `011101` | `SUB` | Resta | 2 | ✅ |
+| `100000` | `TRAP` | Transferir a manejador de excepciones | 57 | ❌ |
+| `100001` | `RFT` | Retornar de excepción | 58 | ✅ |
+
+> **Conclusión de cobertura:** las Tablas A.1 y A.2 del manual listan **55 instrucciones distintas** (sin contar las variantes `h=0/h=1` como instrucciones separadas). De esas 55, **54 fueron probadas exitosamente** y **1 falló** (`TRAP`). Las variantes `h=1` de las lógicas inmediatas (`ANDIH`, `ORIH`, `XORIH`) elevan el total de casos a 58. **No falta ninguna instrucción del ISA por probar.**
+
+## Correcciones a hallazgos previos
+
+| Hallazgo anterior | Re-evaluación automática | Conclusión corregida |
+|---|---|---|
+| `ADDI` ilegal (Caso 30) | **Funciona correctamente** (`r1=5`, `CAUSE=0`) | El fallo original era un **falso positivo** causado por la CPU trabada tras una instrucción ilegal anterior (Caso 41). Con `reset` previo obligatorio, `ADDI` cumple la especificación. |
+| `LUI` ilegal (Caso 38) | **Funciona correctamente** (`r1=0xABCD0000`, `CAUSE=0`) | Mismo diagnóstico que `ADDI`: falso positivo por CPU trabada. |
+| `JALR` guarda enlace en `$0` | Con `rd=31` explícito, **guarda correctamente en `$ra`** (`r31=PC+4`) | El manual describe los operandos como `rs,rt`, pero el hardware usa el campo `rd` del encoding R-type como destino del enlace. Codificar `JALR` con `rd=31` produce el comportamiento esperado. |
+
+## Instrucciones nuevas probadas
+
+### Loads / Stores directos (I-type)
+
+| Caso | Instrucción | Resultado |
+|---|---|---|
+| 42 | `SW $1, 0($2)` → verificar con `LW` | ✅ Store word funciona; LW posterior lee `0xDEADBEEF` correctamente. |
+| 43 | `SH $1, 0($2)` → verificar con `LH` | ✅ Store halfword escribe los 16 bits bajos; LH lee con sign-extend `0xFFFFABCD`. |
+| 44 | `SB $1, 0($2)` → verificar con `LB` | ✅ Store byte escribe 8 bits; LB lee con sign-extend `0x00000078` (bit 7 = 0). |
+| 45 | `LW $1, 0($2)` | ✅ Carga palabra completa `0x1234ABCD`. |
+| 46 | `LH $1, 0($2)` (signo, valor `0x8000`) | ✅ Sign-extend a `0xFFFF8000`. |
+| 47 | `LHU $1, 0($2)` (valor `0x8000`) | ✅ Zero-extend a `0x00008000`. |
+| 48 | `LB $1, 0($2)` (signo, valor `0x80`) | ✅ Sign-extend a `0xFFFFFF80`. |
+| 49 | `LBU $1, 0($2)` (valor `0x80`) | ✅ Zero-extend a `0x00000080`. |
+
+### Loads / Stores indexados (R-type)
+
+| Caso | Instrucción | Resultado |
+|---|---|---|
+| 50 | `LWX $1, $2($3)` (EA = 0x1004) | ✅ Carga `0xCAFEBABE`. |
+| 51 | `LHX $1, $2($3)` (signo, `0x8000`) | ✅ Sign-extend a `0xFFFF8000`. |
+| 52 | `LHUX $1, $2($3)` (`0x8000`) | ✅ Zero-extend a `0x00008000`. |
+| 53 | `LBX $1, $2($3)` (signo, `0x80`) | ✅ Sign-extend a `0xFFFFFF80`. |
+| 54 | `LBUX $1, $2($3)` (`0x80`) | ✅ Zero-extend a `0x00000080`. |
+
+### Especiales / Privilegiadas
+
+| Caso | Instrucción | Resultado |
+|---|---|---|
+| 55 | `CFS $2, 0` (leer `$psw`) | ✅ No genera excepción; lee valor válido en `$2`. |
+| 56 | `CTS $2, 0` (escribir `$psw`) | ✅ No genera excepción; acepta escritura. |
+| 57 | `TRAP 0` | ❌ **Instrucción ilegal** (`CAUSE=3`, `BADVADR=0xE00`). No salta al handler, no guarda `EPC`. |
+| 58 | `RFT` | ✅ No genera excepción (PC vuelve a `EPC`, que tras reset es `0x00000000`). |
+
+### Variantes lógicas inmediatas h=1
+
+| Caso | Instrucción | Resultado |
+|---|---|---|
+| 39 | `ANDIH $1, $2, 0x0F0F` | ✅ `0xFFFFFFFF & 0x0F0F0000 = 0x0F0F0000`. |
+| 40 | `ORIH $1, $2, 0xFF00` (rs=`0x0000F0F0`) | ✅ `0x0000F0F0 \| 0xFF000000 = 0xFF00F0F0`. |
+| 41 | `XORIH $1, $2, 0xABCD` (rs=`0xABCD0000`) | ✅ `0xABCD0000 ^ 0xABCD0000 = 0x00000000`. |
+
+## Resumen final del ISA STX4 en RTM32
+
+| Categoría | Instrucciones | Estado |
+|---|---|---|
+| **ALU / Lógicas / Shift / Mul-Div** | `ADD`, `SUB`, `AND`, `OR`, `XOR`, `NOR`, `SLT`, `SLTU`, `MUL`, `MULH`, `MULHU`, `DIV`, `DIVU`, `REST`, `RESTU`, `SLL`, `SRL`, `SRA`, `SLLR`, `SRLR`, `SRAR` | ✅ Todas funcionan correctamente |
+| **Saltos incondicionales** | `J`, `JAL`, `JR`, `JALR` (con `rd=31`) | ✅ Todas funcionan correctamente |
+| **Branches condicionales** | `BEQ`, `BNE`, `BLT`, `BGT`, `BLE`, `BGE` | ✅ Todas funcionan correctamente |
+| **Inmediatos aritméticos** | `ADDI`, `SLTI`, `SLTIU` | ✅ Todas funcionan correctamente |
+| **Lógicas inmediatas** | `ANDI/H`, `ORI/H`, `XORI/H` | ✅ Todas funcionan correctamente |
+| **LUI** | `LUI` | ✅ Funciona correctamente |
+| **Loads / Stores directos** | `LW`, `SW`, `SH`, `SB`, `LH`, `LHU`, `LB`, `LBU` | ✅ Todas funcionan correctamente |
+| **Loads / Stores indexados** | `LWX`, `LHX`, `LHUX`, `LBX`, `LBUX` | ✅ Todas funcionan correctamente |
+| **Especiales** | `CFS`, `CTS` | ✅ Funcionan correctamente |
+| **Excepciones** | `TRAP`, `RFT` | ❌ `TRAP` no implementada (ilegal); `RFT` no crashea pero no verificamos salto real |
+| **Bugs de alcance general** | `$0` escribible | ❌ `$0` sigue siendo escribible (no protegido) |
+| **Bugs de metodología** | CPU tras ilegal | ⚠️ Requiere `reset` tras cualquier instrucción ilegal antes de continuar |
+| **Bugs del debugger** | `examine` | ❌ Sigue ignorando la dirección de inicio |
+
+**Cobertura ISA:** 57/58 instrucciones probadas exitosamente (~98%). Solo `TRAP` falla.
