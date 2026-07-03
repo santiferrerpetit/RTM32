@@ -163,7 +163,6 @@ $RECYCLE.BIN/
 
 # --- Archivos grandes / binarios generados ---
 *.bin
-!testsuite.bin
 *.dat
 *.dump
 
