@@ -1,10 +1,14 @@
 # Pruebas de instrucciones STX4 (RTM32) — máquina nueva (Jul 2026, `RTM32-0.1.0`)
 
 Este documento reemplaza la versión anterior (escrita contra el binario/ISA previos, ya
-incompatibles). Cobertura: **46 casos**, uno por instrucción del ISA nuevo (Tablas B.1/B.2 de
-`rtm32.pdf`), todos ejecutados de verdad contra el simulador — no son valores calculados a
-mano. 40 casos confirman el comportamiento documentado en el manual; 6 documentan
-instrucciones con comportamiento roto/no implementado en este build, con evidencia.
+incompatibles). Cobertura: **48 casos**, todos ejecutados de verdad contra el simulador — no
+son valores calculados a mano. Los primeros 46 cubren una instrucción cada uno (Tablas B.1/B.2
+de `rtm32.pdf`); los Casos 57 y 58 amplían la verificación con barridos dirigidos (flags de
+`MUL`, casos límite de división) sobre instrucciones ya cubiertas. 40 casos confirman el
+comportamiento documentado en el manual; 6 documentan instrucciones con comportamiento
+roto/no implementado en este build; 2 documentan comportamiento real del binario que el
+manual no cubre en absoluto (flags no listadas en la Tabla B.2, y un bug de corrupción de
+`$vbr` que resulta ser sistémico y no exclusivo de `TRAP`).
 
 ## Metodología
 
@@ -292,6 +296,29 @@ Mismo patrón que `JALX`: barrido de `lr=0,1,2,3` con `JALRX $t0, 12` (`t0=0x100
 
 `RFT` (`PC=EPC`, `$psw` restaurado desde `$esr`) ejecutado en `0x00000200` con `EPC=0` (valor de reset). El debugger no expone un target `set epc`/`set vbr` directo (`Error: Unknown assignment target 'epc'`), así que se probó tal cual. Resultado: **tras `step 1`, `PC` se quedó exactamente en `0x00000200`** — ni saltó a `EPC=0` como documenta el manual, ni avanzó a `0x00000204` como cualquier instrucción normal. **Conclusión: `RFT` no hace ningún progreso visible en este build; no se pudo confirmar el comportamiento documentado.**
 
+## Caso 57 — `MUL` setea flags `C`/`V` no listadas en la Tabla B.2
+
+Barrido de 4 combinaciones de operandos con `MUL $t2, $t0, $t1` (func `011000`), leyendo el campo `Flags: [N Z C V _]` de `registers` tras cada `step`:
+
+- `t0=6, t1=7` (sin overflow) → `R[16]=0x0000002A`. `Flags: [-----]`.
+- `t0=0x00010000, t1=0x00010000` (producto real `0x100000000`, excede 32 bits) → `R[16]=0x00000000`. `Flags: [-ZCV-]` (`Z` porque la palabra baja da 0; `C` y `V` ambas seteadas).
+- `t0=0xFFFFFFFF` (-1), `t1=2` → `R[16]=0xFFFFFFFE` (-2, resultado con signo correcto, cabe en 32 bits). `Flags: [N-C--]` (`C` seteada por el overflow **sin signo** de `U(-1)*2`; `V` no se setea porque el resultado con signo es válido).
+- `t0=0x7FFFFFFF` (INT_MAX), `t1=2` → mismo `R[16]=0xFFFFFFFE`, pero `Flags: [N--V-]` (acá `V` sí se setea porque `INT_MAX*2` desborda el rango con signo; `C` no se setea).
+
+**Conclusión:** `MUL` calcula `C` (overflow sin signo del producto de 64 bits contra la palabra baja de 32) y `V` (overflow con signo, mismo criterio interpretando los operandos con signo) de forma independiente y en base al signo real de los operandos — no es un efecto casual del valor resultante: los últimos dos casos dan el mismo `R[16]` pero flags distintas según el signo de `t0`. La Tabla B.2 no menciona flags para ninguna instrucción aritmética R-type; es comportamiento real del binario, sin documentar.
+
+## Caso 58 — Excepciones aritméticas corrompen `$vbr`, mismo bug que `TRAP` (Caso 55)
+
+División por cero (con y sin signo), resto por cero (con y sin signo), y el caso clásico de overflow `INT_MIN / -1` — los 5 casos disparan exactamente el mismo patrón:
+
+- `DIV $t2, $t0, $t1` con `t0=17, t1=0` → `R[16]=0`, `CAUSE=0x00000003`, `$vbr` pasa de `0xF0000000` (valor de reset) a `0x00000002`. `PC` avanza normal a `PC+4`, no salta a ningún handler.
+- `DIVU $t2, $t0, $t1` con `t0=17, t1=0` → idéntico: `CAUSE=0x3`, `$vbr=0x00000002`.
+- `DIV $t2, $t0, $t1` con `t0=0x80000000` (INT_MIN), `t1=0xFFFFFFFF` (-1) → idéntico: `R[16]=0`, `CAUSE=0x3`, `$vbr=0x00000002`.
+- `REST $t2, $t0, $t1` con `t0=17, t1=0` → idéntico.
+- `RESTU $t2, $t0, $t1` con `t0=17, t1=0` → idéntico.
+
+**Conclusión:** el bug de corrupción de `$vbr` del Caso 55 (`TRAP`) **no es exclusivo de `TRAP`** — es un bug del mecanismo de despacho de excepciones en general. Cualquier condición que dispare una excepción interna de la ALU (división por cero, resto por cero, overflow de división) pasa por el mismo camino roto: no hay salto a vector de excepción (`PC` sigue como si nada hubiera pasado), `CAUSE` queda fijo en `0x3` sin distinguir el tipo de falla aritmética (mismo código para división por cero que para overflow de división), y `$vbr` termina en `0x00000002` en los 5 casos. Ningún capítulo del manual (el 8, "PRONTO...") documenta el código de causa `0x3` ni este comportamiento.
+
 ---
 
 ## Resumen
@@ -310,5 +337,7 @@ Mismo patrón que `JALX`: barrido de `lr=0,1,2,3` con `JALRX $t0, 12` (`t0=0x100
 | Saltos multi-link             | `JALX JALRX`                                | ⚠️ saltan bien, `lr` ignorado         |
 | SFR                           | `CFS CTS`                                   | ❌ no implementados                   |
 | Excepciones                   | `TRAP RFT`                                  | ❌ rotos / intestables sin kernel RAM |
+| Flags no documentadas         | `MUL` (`C`/`V`)                             | ⚠️ funcionan, pero Tabla B.2 no las lista |
+| Excepciones aritméticas       | `DIV DIVU REST RESTU` (div/0, resto/0, `INT_MIN/-1`) | ❌ mismo bug de corrupción de `$vbr` que `TRAP` |
 
-**69 instrucciones del ISA cubiertas** (todo Tabla B.1 + B.2 salvo las reinterpretaciones triviales de opcode ya cubiertas por sus pares). 61 confirman el manual al 100%, 2 saltan correctamente pero con una limitación real (link register fijo), 4 no funcionan como está documentado.
+**69 instrucciones del ISA cubiertas** (todo Tabla B.1 + B.2 salvo las reinterpretaciones triviales de opcode ya cubiertas por sus pares). 61 confirman el manual al 100%, 2 saltan correctamente pero con una limitación real (link register fijo), 4 no funcionan como está documentado. Los Casos 57-58 suman verificación dirigida sobre instrucciones ya cubiertas (`MUL`, `DIV`, `DIVU`, `REST`, `RESTU`): confirman que `MUL` setea flags `C`/`V` que la Tabla B.2 no lista, y que el bug de corrupción de `$vbr` documentado para `TRAP` es en realidad sistémico — se dispara igual ante cualquier excepción aritmética (división por cero, resto por cero, overflow de división).

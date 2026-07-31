@@ -4,7 +4,7 @@ Harness Docker para correr el simulador precompilado de **STX4** (`RTM32-0.1.0`)
 
 Este repo no tiene código fuente propio: el binario a ejecutar (`rtm32`) ya viene compilado.
 
-> ⚠️ **Máquina y manual actualizados (Jul 2026).** El binario y el `rtm32.pdf` cambiaron a una revisión nueva e incompatible con la anterior: convención de registros distinta, opcodes distintos, capítulo del debugger del manual desactualizado respecto del binario real. Todo lo que sigue ya está verificado contra el binario nuevo. Ver `pruebas-stx4.md` para las 69 instrucciones probadas una por una contra el simulador real (incluye 6 que están rotas/no implementadas en este build: `CFS`/`CTS`/`TRAP`/`RFT`/`JALX`/`JALRX`).
+> ⚠️ **Máquina y manual actualizados (Jul 2026).** El binario y el `rtm32.pdf` cambiaron a una revisión nueva e incompatible con la anterior: convención de registros distinta, opcodes distintos, capítulo del debugger del manual desactualizado respecto del binario real. Todo lo que sigue ya está verificado contra el binario nuevo. Ver `pruebas-stx4.md` para las 69 instrucciones probadas una por una contra el simulador real (incluye 6 que están rotas/no implementadas en este build: `CFS`/`CTS`/`TRAP`/`RFT`/`JALX`/`JALRX`, más 2 casos adicionales de verificación dirigida — ver "Bugs y comportamiento no documentado" al final de este archivo).
 
 ## Contenido del repo
 
@@ -258,3 +258,10 @@ El simulador no trae ensamblador: cada instrucción se codifica a mano (opcode/f
 Registros: `$0`-`$31` de propósito general (numeración **física**, ver tabla abajo — la máquina nueva no requiere traducción MIPS) + `$pc` + 7 registros especiales (`$psw`, `$ecr`, `$epc`, `$esr`, `$bva`, `$vbr`, `$pir`) accedidos vía `CFS`/`CTS`.
 
 > **Convención Tabla 3.1 del manual (Jul 2026), YA son los números físicos:** `$zero`($0), `$ra`($1), `$k0,$k1`($2-3), `$lr0-$lr3`($4-7), `$a0-$a5`($8-13, alias `$v0,$v1`=`$a0,$a1`), `$t0-$t5`($14-19), `$s0-$s7`($20-27), `$fp`($28, alias `$s8`), `$gp`($29, alias `$s9`), `$sp`($30), `$at`($31).
+
+## Bugs y comportamiento no documentado
+
+Encontrados corriendo `MUL`/`DIV`/`DIVU`/`REST`/`RESTU` con casos límite contra el simulador real (Casos 57-58 de `pruebas-stx4.md`, ahí está el detalle completo con encodings y valores):
+
+- **`MUL` setea flags `C` (overflow sin signo) y `V` (overflow con signo)** — la Tabla B.2 del manual no menciona flags para ninguna instrucción aritmética R-type, pero el binario las calcula de verdad: barrido de 4 combinaciones de operandos muestra que `C` y `V` responden al signo real de los operandos, no son ruido. Ejemplo: `0xFFFFFFFF * 2` da `Flags: [N-C--]` (overflow sin signo, `V` no se setea porque el resultado con signo es válido) mientras que `0x7FFFFFFF * 2` (mismo resultado en `R[rd]`) da `Flags: [N--V-]` (acá sí desborda con signo). Orden del campo `Flags: [_____]` de `registers`: `N Z C V _`.
+- **Cualquier excepción aritmética corrompe `$vbr`, no solo `TRAP`.** El manual no documenta códigos de `CAUSE` ni el comportamiento de excepciones (Cap. 8 = "PRONTO..."), y ya se sabía que `TRAP` deja `$vbr` en `0x00000002` en vez de su valor real. Resulta que **división por cero, resto por cero y overflow de división (`INT_MIN / -1`) disparan el mismo bug**: `CAUSE` queda en `0x00000003` (sin distinguir el tipo de falla), `PC` avanza normal como si no hubiera pasado nada (no hay salto a vector de excepción), y `$vbr` se corrompe a `0x00000002` en los 5 casos probados (`DIV`, `DIVU`, `REST`, `RESTU` por cero, más `DIV` con `INT_MIN/-1`). Es un bug del mecanismo de despacho de excepciones en general, no algo aislado a la instrucción `TRAP`.
