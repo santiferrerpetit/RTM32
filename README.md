@@ -1,18 +1,25 @@
 # RTM32 — Simulador de CPU STX4
 
-Harness Docker para correr el simulador precompilado de **STX4**, una CPU RISC de 32 bits custom, dentro del sistema **RTM32**. El simulador expone un debugger remoto por telnet y una consola UART, ambas sobre TCP.
+Harness Docker para correr el simulador precompilado de **STX4** (`RTM32-0.1.0`), una CPU RISC de 32 bits custom, dentro del sistema **RTM32**. El simulador expone un debugger remoto por telnet y una consola UART, ambas sobre TCP.
 
-Este repo no tiene código fuente propio: el "binario" a ejecutar (`rtm32.s`) ya viene compilado. Lo único editable acá es el `Dockerfile` y este README.
+Este repo no tiene código fuente propio: el binario a ejecutar (`rtm32`) ya viene compilado.
+
+> ⚠️ **Máquina y manual actualizados (Jul 2026).** El binario y el `rtm32.pdf` cambiaron a una revisión nueva e incompatible con la anterior: convención de registros distinta, opcodes distintos, capítulo del debugger del manual desactualizado respecto del binario real. Todo lo que sigue ya está verificado contra el binario nuevo. Ver `pruebas-stx4.md` para las 69 instrucciones probadas una por una contra el simulador real (incluye 6 que están rotas/no implementadas en este build: `CFS`/`CTS`/`TRAP`/`RFT`/`JALX`/`JALRX`).
 
 ## Contenido del repo
 
-| Archivo           | Qué es                                                                                                                        |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `rtm32.s`         | Simulador (ELF x86-64 estático). A pesar de la extensión `.s`, **es un binario**, no assembly. Es lo que corre el contenedor. |
-| `rtm32`           | Misma build del simulador, pero dinámica y sin strip. No la usa Docker; sirve para debuggear en el host directamente.         |
-| `rtm32.pdf`       | Manual de arquitectura/ISA de STX4 (español). Referencia de registros, formatos de instrucción y opcodes (Apéndice A).        |
-| `Dockerfile`      | Imagen que corre el simulador + un puente `socat` para la UART.                                                               |
-| `pruebas-stx4.md` | Batería de pruebas manuales de instrucciones (casos con precondición/código/postcondición/conclusión).                        |
+| Archivo                | Qué es                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `rtm32`                | Simulador (ELF x86-64 dinámico, `RTM32-0.1.0`). Es lo que corre el contenedor.                                            |
+| `rtm32.s`              | Misma build, enlazada estáticamente. No la usa Docker; sirve para debuggear en el host directamente.                      |
+| `rtm32.pdf`            | Manual de arquitectura/ISA de STX4 (español). Referencia de registros, memoria y opcodes.                                 |
+| `Dockerfile`           | Imagen que corre el simulador + `docker-entrypoint.sh` + un puente `socat` para la UART.                                  |
+| `docker-entrypoint.sh` | Arranca `rtm32`, levanta el puente UART→5555, e inyecta/arranca la ROM de boot.                                           |
+| `build_rom.py`         | Genera `rom.bin`: hand-assembler de la ROM mínima usando el ISA verificado. Correr `python3 build_rom.py` para regenerar. |
+| `inject_rom.py`        | Inyecta `rom.bin` en memoria vía el debugger telnet y arranca la CPU. Ver gotcha de la conexión en "Boot ROM".            |
+| `rom.bin`              | ROM de boot mínima (64K). Imprime `ROM OK\r\n` y entra en loop infinito. Ver sección "Boot ROM".                          |
+| `test_rom.sh`          | Smoke test end-to-end: build + run + chequea `ROM OK` por UART + cleanup.                                                 |
+| `pruebas-stx4.md`      | Batería de pruebas de instrucciones — 69 casos re-verificados contra el binario nuevo (incluye instrucciones rotas).      |
 
 ## Requisitos
 
@@ -21,11 +28,12 @@ Este repo no tiene código fuente propio: el "binario" a ejecutar (`rtm32.s`) ya
 ## Uso
 
 ```bash
+docker rm -f rtm32-sim 2>/dev/null  # por si quedó un contenedor previo con ese nombre
 docker build -t rtm32 .
 docker run -d --name rtm32-sim -p 4444:4444 -p 5555:5555 rtm32
 ```
 
-Esto levanta `rtm32.s -d telnet -m 64K` (debugger por telnet, 64K de memoria) y un puente `socat` que expone la UART del simulador en el puerto 5555.
+Esto levanta `rtm32 -d telnet -m 64K` (debugger por telnet, 64K de memoria de usuario) y un puente `socat` que expone la UART del simulador en el puerto 5555, y arranca la ROM de boot automáticamente (ver "Boot ROM" abajo).
 
 **Terminal 1 — Consola UART (salida del programa):**
 
@@ -46,6 +54,141 @@ telnet localhost 4444
 ```bash
 docker rm -f rtm32-sim
 ```
+
+## Boot ROM
+
+El archivo `rom.bin` es una ROM mínima que arranca la CPU STX4 automáticamente: carga la dirección de la UART, imprime `ROM OK\r\n`, y entra en un loop infinito.
+
+### Arquitectura del boot
+
+Al hacer `docker run`, el entrypoint del contenedor realiza esta secuencia automáticamente:
+
+```
+┌─────────────────────┐
+│  1. Levanta rtm32   │ → Crea PTY de UART y debugger telnet (4444)
+└──────────┬──────────┘
+           │
+┌──────────▼──────────┐
+│  2. socat bridge    │ → Expone PTY en TCP 5555
+└──────────┬──────────┘
+           │
+┌──────────▼──────────┐
+│  3. Inyecta ROM     │ → Conecta a debugger 127.0.0.1:4444
+│     vía debugger    │    y escribe 21 palabras en memoria con
+│     (set [addr])    │    `set [addr] word`
+└──────────┬──────────┘
+           │
+┌──────────▼──────────┐
+│  4. set PC=0x0000   │
+│  5. continue        │ → CPU ejecuta la ROM
+└──────────┬──────────┘
+           │
+     ┌─────▼─────┐
+     │  ROM OK   │ → Visible en telnet localhost 5555
+     └───────────┘
+```
+
+> **Nota importante:** `load rom.bin exact` **no funciona** en este build (espera un formato snapshot interno con magic+versión+tag de arquitectura, no un binario raw — confirmado por los mensajes de error del propio binario). El flag `-r/--rom` que el manual documenta como reemplazo (bootear desde el vector de reset real, `0xF0000000`) **tampoco tiene efecto**: probado directamente, el log de arranque siempre dice `CPU PC initialized to 0x00000000` (la ruta sin ROM), nunca el mensaje de "reset vector" que el binario sí soporta internamente. Por eso la ROM se inyecta palabra por palabra a través del debugger TCP, arrancando en `0x0000` (RAM de usuario) en vez del vector arquitectural.
+>
+> **Gotcha crítico:** cerrar la conexión telnet del debugger mata **todo el proceso** `rtm32`, no solo la sesión de depuración (verificado: el log muestra `Debugger session channel context destroyed cleanly` seguido inmediatamente de `Destroying serial device`). Por eso `inject_rom.py` nunca cierra su socket — se queda bloqueado para siempre después de `continue`, y `docker-entrypoint.sh` lo corre en background (`&`).
+
+### Uso — Boot automático
+
+**1. Build y run:**
+
+```bash
+docker rm -f rtm32-sim 2>/dev/null
+docker build --platform linux/amd64 -t rtm32 .
+docker run -d --platform linux/amd64 --name rtm32-sim -p 4444:4444 -p 5555:5555 rtm32
+```
+
+> **Mac M1/M2:** siempre agregar `--platform linux/amd64` porque el simulador es un binario x86-64.
+
+**2. Esperar ~7-10 segundos** (boot completo: simulador → PTY → socat → inyección ROM → `continue`).
+
+**3. Conectar a la UART:**
+
+```bash
+telnet localhost 5555
+```
+
+Deberías ver inmediatamente:
+
+```
+ROM OK
+```
+
+**4. Apagar:**
+
+```bash
+docker rm -f rtm32-sim
+```
+
+### Qué hace la ROM paso a paso
+
+Usa `$t0`(físico `$14`) como puntero a la UART y `$t1`(físico `$15`) como dato temporal — numeración física directa de la Tabla 3.1 del manual nuevo, sin traducción.
+
+| Dirección | Instrucción (machine code)    | Efecto                                              |
+| --------- | ----------------------------- | --------------------------------------------------- |
+| `0x0000`  | `LCI $t0, $t0, 0xFFFF` (h=1)  | `$t0 = C16(0xFFFF, $t0) = 0xFFFF0000`               |
+| `0x0004`  | `XORI $t0, $t0, 0xFF00` (h=0) | `$t0 = 0xFFFF0000 ^ 0x0000FF00 = 0xFFFFFF00`        |
+| `0x0008`  | `XORI $t1, $zero, 'R'` (h=0)  | `$t1 = 0x52`                                        |
+| `0x000C`  | `SH $t0, $t1, 0`              | UART ← 'R'                                          |
+| `0x0010`  | `XORI $t1, $zero, 'O'` (h=0)  | `$t1 = 0x4F`                                        |
+| `0x0014`  | `SH $t0, $t1, 0`              | UART ← 'O'                                          |
+| ...       | ...                           | ...                                                 |
+| `0x0040`  | `XORI $t1, $zero, '\n'` (h=0) | `$t1 = 0x0A`                                        |
+| `0x0044`  | `SH $t0, $t1, 0`              | UART ← '\n'                                         |
+| `0x0048`  | `J 0x0048`                    | Loop infinito (`elimm=-1`, `PC = PC+4+4·(-1) = PC`) |
+
+Instrucciones usadas, todas **verificadas por ejecución real** en el simulador (inyectadas a mano, `step`/`continue`, chequeado con `registers` y leyendo la UART por el puerto 5555): `LCI`, `XORI` (ambas variantes `h=0`/`h=1`), `SH`, `J`.
+
+### Método manual (debug)
+
+Si querés entender qué hace la ROM o debuggear, podés inyectarla a mano vía `telnet localhost 4444` (los valores son el dump que imprime `python3 build_rom.py`):
+
+```
+reset
+set [0x00000000] 0x239DFFFF
+set [0x00000004] 0x3B9CFF00
+set [0x00000008] 0x381E0052
+set [0x0000000C] 0x539E0000
+set [0x00000010] 0x381E004F
+set [0x00000014] 0x539E0000
+set [0x00000018] 0x381E004D
+set [0x0000001C] 0x539E0000
+set [0x00000020] 0x381E0020
+set [0x00000024] 0x539E0000
+set [0x00000028] 0x381E004F
+set [0x0000002C] 0x539E0000
+set [0x00000030] 0x381E004B
+set [0x00000034] 0x539E0000
+set [0x00000038] 0x381E000D
+set [0x0000003C] 0x539E0000
+set [0x00000040] 0x381E000A
+set [0x00000044] 0x539E0000
+set [0x00000048] 0x09FFFFFF
+set pc 0x00000000
+continue
+```
+
+⚠️ Con la sesión de telnet manual, en cuanto cierres esa conexión (o el cliente telnet) **todo el simulador se apaga** (ver gotcha arriba) — no es un bug de este método, es cómo se comporta el binario.
+
+### Regenerar la ROM
+
+```bash
+python3 build_rom.py
+```
+
+Esto recrea `rom.bin` a partir del script Python. `build_rom.py` está en `.gitignore`; el binario resultante (`rom.bin`) **sí está trackeado** en git.
+
+### Troubleshooting
+
+| Síntoma                                        | Causa probable                               | Solución                                                                                                                                                |
+| ---------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telnet localhost 5555` → "Connection refused" | El contenedor murió antes de levantar socat. | Revisá `docker logs rtm32-sim`. Si dice `ERROR: no se encontró PTY`, esperá unos segundos más antes de conectarte (el simulador tarda en crear el PTY). |
+| UART vacía (no aparece `ROM OK`)               | La inyección no se completó.                 | Conectate al debugger (`telnet localhost 4444`), hacé `registers` para ver si `PC=0x00000000`. Si no, hacé `set pc 0x00000000` y `continue`.            |
+| Build tarda mucho                              | Docker descargando imágenes base.            | Es normal la primera vez (~15-30s). Las siguientes usan cache.                                                                                          |
 
 ## Hello World (vía debugger)
 
@@ -71,33 +214,47 @@ Resultado visible en Terminal 1 (`Hello world`).
 
 ## UART MMIO
 
-Único dispositivo mapeado en memoria en esta configuración: escribir un byte en `0xFFFFFF00` lo emite a la consola UART (Terminal 1).
+Escribir una halfword en `0xFFFFFF00` emite el byte bajo a la consola UART (Terminal 1) —
+verificado empíricamente contra el binario nuevo. No está documentado en el manual (el
+capítulo de Entrada/Salida figura como "PRONTO...", no escrito todavía); el mapa de memoria sí
+dice que el bloque de dispositivos MMIO arranca en `0xFFFFF000`, y `0xFFFFFF00` cae dentro de
+ese bloque.
 
 ## Comandos del debugger
 
-| Comando                  | Descripción                 |
-| ------------------------ | --------------------------- |
-| `set r1 0x1234`          | Setear registro             |
-| `set [0x1000] 0xABCD`    | Escribir palabra en memoria |
-| `registers`              | Ver todos los registros     |
-| `examine xw 0x0000 4`    | Ver memoria                 |
-| `step 1`                 | Ejecutar N instrucciones    |
-| `continue`               | Ejecutar libre              |
-| `load archivo.bin exact` | Cargar binario en memoria   |
-| `reset`                  | Reset CPU                   |
-| `quit`                   | Terminar simulación         |
+Estos son los comandos **reales** del binario (extraídos de su `help`/usage), que **no**
+coinciden con el capítulo 10 del manual nuevo (ese capítulo describe comandos `G`/`D R`/`D
+M`/`W`/`S`/`L` que no existen en este build — no lo uses como referencia).
+
+| Comando          | Sintaxis                                     | Descripción                                   |
+| ---------------- | -------------------------------------------- | --------------------------------------------- |
+| `set`            | `set r1 0xFF00` / `set [0x40] 0xEA0000`      | Setear registro o escribir palabra en memoria |
+| `registers`      | `registers`                                  | Ver los 32 GPR + PC + CAUSE/EPC/BADVADR/VBR   |
+| `examine`        | `examine xw 0x1000 4`, `examine bb 0x2000 8` | Ver memoria                                   |
+| `step`           | `step [n]`                                   | Ejecutar n instrucciones                      |
+| `continue`       | `continue`                                   | Ejecutar libre                                |
+| `until`          | `until <addr>`                               | Correr hasta una dirección                    |
+| `break`/`delete` | `break <addr>` / `delete b <id>`             | Breakpoints                                   |
+| `watch`/`delete` | `watch <addr> [+size\|range] [r\|w\|rw]`     | Watchpoints de memoria                        |
+| `list`           | `list`                                       | Listar breakpoints/watchpoints                |
+| `dump`           | `dump hex\|bin <start> <end\|size> [file]`   | Volcar memoria a pantalla o archivo           |
+| `load`           | `load archivo.bin [fast\|exact]`             | Cargar snapshot (**no** acepta binarios raw)  |
+| `reset`          | `reset`                                      | Reset CPU (PC → `0xF0000000`, modo KERNEL)    |
+| `help`           | `help [comando]`                             | Ayuda                                         |
+| `quit`           | `quit`                                       | Terminar simulación (¡mata todo el proceso!)  |
+
+> **Handshake:** al conectar, el debugger descarta silenciosamente las primeras dos líneas
+> enviadas (negociación). Mandá dos líneas de relleno antes del primer comando real.
 
 ## Codificar instrucciones a mano
 
-El simulador no trae ensamblador: cada instrucción se codifica a mano (opcode/func/rs/rt/rd/aux/imm) según el Apéndice A de `rtm32.pdf`, y se inyecta en memoria con `set [addr] palabra` o vía `load archivo.bin exact`.
+El simulador no trae ensamblador: cada instrucción se codifica a mano (opcode/func/rs/rt/rd/param/imm) y se inyecta en memoria con `set [addr] palabra` (`load archivo.bin exact` no acepta binarios raw, ver arriba).
 
-Resumen rápido de formatos (detalle completo en el PDF):
+- **R-type** (`opcode=00000`): `opcode|rs|rt|rd|param(5b)|x(1)|func(6b)` — ALU, shifts, saltos indexados, `CFS`/`CTS`, `TRAP`/`RFT`.
+- **I-type básico**: `opcode|rs|rt|imm(17b)` — loads/stores directos, branches, `ADDI`, `SLTI`/`SLTIU`.
+- **I-type inmediato extendido**: `opcode|rs|rt|h(1)|simm(16b)` — `ANDI`/`LCI`, `ANI`/`ANH`, `ORI`/`ORH`, `XORI`/`XORH` (`h` elige variante inmediata vs. variante "concat" para construir constantes de 32 bits).
+- **J-type**: `opcode|so(2b)|elimm(25b)` para `J`/`JAL` (salto **relativo al PC**, no absoluto), o `opcode|1|lr(2b)|vlimm(24b)` para `JALX`.
 
-- **R-type** (`opcode=00000`): `opcode|rs|rt|rd|aux|X|func` — ALU, shifts, saltos por registro, CFS/CTS, TRAP/RFT.
-- **I-type**: `opcode|rs|rt|imm(17b)` — loads/stores directos, branches, ADDI, SLTI/SLTIU.
-- **L-type**: `opcode|rs|rt|h|imm(16b)` — ANDI/H, ORI/H, XORI/H, LUI (`h` elige mitad alta/baja del inmediato).
-- **J-type**: `opcode|jump_address(27b)` — J/JAL incondicionales.
+Registros: `$0`-`$31` de propósito general (numeración **física**, ver tabla abajo — la máquina nueva no requiere traducción MIPS) + `$pc` + 7 registros especiales (`$psw`, `$ecr`, `$epc`, `$esr`, `$bva`, `$vbr`, `$pir`) accedidos vía `CFS`/`CTS`.
 
-Registros: `$0`-`$31` de propósito general + `$pc` + 5 registros especiales (`$psw`, `$ecr`, `$epc`, `$bva`, `$vbr`) accedidos vía `CFS`/`CTS`. Convención tipo MIPS (`$zero`, `$at`, `$a0-$a3`, `$v0-$v1`, `$t0-$t9`, `$s0-$s7`, `$fp`, `$gp`, `$sp`, `$ra`).
-
-Ver `pruebas-stx4.md` para casos de prueba reales, con encoding, código inyectado y resultado esperado por instrucción.
+> **Convención Tabla 3.1 del manual (Jul 2026), YA son los números físicos:** `$zero`($0), `$ra`($1), `$k0,$k1`($2-3), `$lr0-$lr3`($4-7), `$a0-$a5`($8-13, alias `$v0,$v1`=`$a0,$a1`), `$t0-$t5`($14-19), `$s0-$s7`($20-27), `$fp`($28, alias `$s8`), `$gp`($29, alias `$s9`), `$sp`($30), `$at`($31).

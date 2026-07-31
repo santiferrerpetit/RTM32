@@ -16,8 +16,6 @@ CLAUDE.md
 rtm32_converted.md
 .claude/
 # --- Python ---
-# Archivos fuente Python (no subir)
-*.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -165,6 +163,9 @@ $RECYCLE.BIN/
 *.bin
 *.dat
 *.dump
+
+# ROM boot: scripts auxiliares y binario generado, todos ignorados
+# (build_rom.py / inject_rom.py ya caen en *.py de arriba; rom.bin en *.bin)
 
 # --- Logs y temporales ---
 *.log
