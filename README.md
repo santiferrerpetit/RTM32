@@ -4,7 +4,7 @@ Harness Docker para correr el simulador precompilado de **STX4** (`RTM32-0.1.0`)
 
 Este repo no tiene código fuente propio: el binario a ejecutar (`rtm32`) ya viene compilado.
 
-> ⚠️ **Máquina y manual actualizados (Jul 2026).** El binario y el `rtm32.pdf` cambiaron a una revisión nueva e incompatible con la anterior: convención de registros distinta, opcodes distintos, capítulo del debugger del manual desactualizado respecto del binario real. Todo lo que sigue ya está verificado contra el binario nuevo. Ver `pruebas-stx4.md` para las 69 instrucciones probadas una por una contra el simulador real (incluye 6 que están rotas/no implementadas en este build: `CFS`/`CTS`/`TRAP`/`RFT`/`JALX`/`JALRX`, más 2 casos adicionales de verificación dirigida — ver "Bugs y comportamiento no documentado" al final de este archivo).
+> ⚠️ **Máquina y manual actualizados (Jul 2026).** El binario y el `rtm32.pdf` cambiaron a una revisión nueva e incompatible con la anterior: convención de registros distinta, opcodes distintos, capítulo del debugger del manual desactualizado respecto del binario real. Todo lo que sigue ya está verificado contra el binario nuevo. Ver `pruebas-stx4.md` para las 69 instrucciones probadas una por una contra el simulador real (incluye 6 que están rotas/no implementadas en este build: `CFS`/`CTS`/`TRAP`/`RFT`/`JALX`/`JALRX` — aunque `RFT` en particular resultó andar bien de forma aislada, el bug real es más de fondo: cualquier excepción deja la CPU trabada para siempre, ver "Bugs y comportamiento no documentado" al final de este archivo).
 
 ## Contenido del repo
 
@@ -15,9 +15,7 @@ Este repo no tiene código fuente propio: el binario a ejecutar (`rtm32`) ya vie
 | `rtm32.pdf`            | Manual de arquitectura/ISA de STX4 (español). Referencia de registros, memoria y opcodes.                                 |
 | `Dockerfile`           | Imagen que corre el simulador + `docker-entrypoint.sh` + un puente `socat` para la UART.                                  |
 | `docker-entrypoint.sh` | Arranca `rtm32`, levanta el puente UART→5555, e inyecta/arranca la ROM de boot.                                           |
-| `build_rom.py`         | Genera `rom.bin`: hand-assembler de la ROM mínima usando el ISA verificado. Correr `python3 build_rom.py` para regenerar. |
-| `inject_rom.py`        | Inyecta `rom.bin` en memoria vía el debugger telnet y arranca la CPU. Ver gotcha de la conexión en "Boot ROM".            |
-| `rom.bin`              | ROM de boot mínima (64K). Imprime `ROM OK\r\n` y entra en loop infinito. Ver sección "Boot ROM".                          |
+| `rom.bin`              | ROM de boot mínima (64K), hand-assembleada a mano con el ISA verificado. Imprime `ROM OK\r\n` y entra en loop infinito. Ver sección "Boot ROM".                          |
 | `test_rom.sh`          | Smoke test end-to-end: build + run + chequea `ROM OK` por UART + cleanup.                                                 |
 | `pruebas-stx4.md`      | Batería de pruebas de instrucciones — 69 casos re-verificados contra el binario nuevo (incluye instrucciones rotas).      |
 
@@ -90,7 +88,7 @@ Al hacer `docker run`, el entrypoint del contenedor realiza esta secuencia autom
 
 > **Nota importante:** `load rom.bin exact` **no funciona** en este build (espera un formato snapshot interno con magic+versión+tag de arquitectura, no un binario raw — confirmado por los mensajes de error del propio binario). El flag `-r/--rom` que el manual documenta como reemplazo (bootear desde el vector de reset real, `0xF0000000`) **tampoco tiene efecto**: probado directamente, el log de arranque siempre dice `CPU PC initialized to 0x00000000` (la ruta sin ROM), nunca el mensaje de "reset vector" que el binario sí soporta internamente. Por eso la ROM se inyecta palabra por palabra a través del debugger TCP, arrancando en `0x0000` (RAM de usuario) en vez del vector arquitectural.
 >
-> **Gotcha crítico:** cerrar la conexión telnet del debugger mata **todo el proceso** `rtm32`, no solo la sesión de depuración (verificado: el log muestra `Debugger session channel context destroyed cleanly` seguido inmediatamente de `Destroying serial device`). Por eso `inject_rom.py` nunca cierra su socket — se queda bloqueado para siempre después de `continue`, y `docker-entrypoint.sh` lo corre en background (`&`).
+> **Gotcha crítico:** cerrar la conexión telnet del debugger mata **todo el proceso** `rtm32`, no solo la sesión de depuración (verificado: el log muestra `Debugger session channel context destroyed cleanly` seguido inmediatamente de `Destroying serial device`). Por eso el proceso que inyecta la ROM nunca cierra su socket — se queda bloqueado para siempre después de `continue`, y `docker-entrypoint.sh` lo corre en background (`&`).
 
 ### Uso — Boot automático
 
@@ -145,7 +143,7 @@ Instrucciones usadas, todas **verificadas por ejecución real** en el simulador 
 
 ### Método manual (debug)
 
-Si querés entender qué hace la ROM o debuggear, podés inyectarla a mano vía `telnet localhost 4444` (los valores son el dump que imprime `python3 build_rom.py`):
+Si querés entender qué hace la ROM o debuggear, podés inyectarla a mano vía `telnet localhost 4444` (los valores son el volcado de instrucciones de la ROM ya generada):
 
 ```
 reset
@@ -176,11 +174,7 @@ continue
 
 ### Regenerar la ROM
 
-```bash
-python3 build_rom.py
-```
-
-Esto recrea `rom.bin` a partir del script Python. `build_rom.py` está en `.gitignore`; el binario resultante (`rom.bin`) **sí está trackeado** en git.
+`rom.bin` se regenera con el generador de ROM interno del proyecto (no incluido en este repo). El binario resultante (`rom.bin`) **sí está trackeado** en git.
 
 ### Troubleshooting
 
@@ -261,7 +255,11 @@ Registros: `$0`-`$31` de propósito general (numeración **física**, ver tabla 
 
 ## Bugs y comportamiento no documentado
 
-Encontrados corriendo `MUL`/`DIV`/`DIVU`/`REST`/`RESTU` con casos límite contra el simulador real (Casos 57-58 de `pruebas-stx4.md`, ahí está el detalle completo con encodings y valores):
+Encontrados corriendo casos límite contra el simulador real (Casos 57-59 de `pruebas-stx4.md`, ahí está el detalle completo con encodings y valores):
 
 - **`MUL` setea flags `C` (overflow sin signo) y `V` (overflow con signo)** — la Tabla B.2 del manual no menciona flags para ninguna instrucción aritmética R-type, pero el binario las calcula de verdad: barrido de 4 combinaciones de operandos muestra que `C` y `V` responden al signo real de los operandos, no son ruido. Ejemplo: `0xFFFFFFFF * 2` da `Flags: [N-C--]` (overflow sin signo, `V` no se setea porque el resultado con signo es válido) mientras que `0x7FFFFFFF * 2` (mismo resultado en `R[rd]`) da `Flags: [N--V-]` (acá sí desborda con signo). Orden del campo `Flags: [_____]` de `registers`: `N Z C V _`.
-- **Cualquier excepción aritmética corrompe `$vbr`, no solo `TRAP`.** El manual no documenta códigos de `CAUSE` ni el comportamiento de excepciones (Cap. 8 = "PRONTO..."), y ya se sabía que `TRAP` deja `$vbr` en `0x00000002` en vez de su valor real. Resulta que **división por cero, resto por cero y overflow de división (`INT_MIN / -1`) disparan el mismo bug**: `CAUSE` queda en `0x00000003` (sin distinguir el tipo de falla), `PC` avanza normal como si no hubiera pasado nada (no hay salto a vector de excepción), y `$vbr` se corrompe a `0x00000002` en los 5 casos probados (`DIV`, `DIVU`, `REST`, `RESTU` por cero, más `DIV` con `INT_MIN/-1`). Es un bug del mecanismo de despacho de excepciones en general, no algo aislado a la instrucción `TRAP`.
+
+- **El bug real no es "`TRAP` y `RFT` están rotos" — es que cualquier excepción deja la CPU trabada para siempre.** El manual no documenta códigos de `CAUSE` ni el comportamiento de excepciones (Cap. 8 = "PRONTO..."). Lo que se ve desde afuera:
+  - `TRAP`, y también división por cero / resto por cero / overflow de división (`INT_MIN / -1`), ponen `CAUSE` en un código fijo (`0x6` para `TRAP`, `0x3` para las excepciones aritméticas — sin distinguir división por cero de overflow), avanzan `PC` a `PC+4` como si nada (no hay salto a ningún vector), y corrompen `$vbr` a `0x00000002`. `TRAP` además nunca llega a escribir `$epc` pese a que la fórmula documentada dice que debería.
+  - Probado por separado, `RFT` (`PC=EPC`, `$psw` restaurado desde `$esr`) **funciona perfecto** si todavía no ocurrió ninguna excepción en la sesión: salta a `$epc` y cambia de modo `KERNEL` a `USER` como corresponde. La conclusión anterior de "`RFT` no hace nada" era un artefacto de haberlo probado después de que la CPU ya estuviera trabada por otra causa.
+  - La prueba definitiva: tras un `DIV` por cero, se intentó ejecutar cinco instrucciones `ADD` inofensivas puestas a propósito en el camino. Ninguna corrió — `PC` y hasta el campo `Last Memory Operation` (que sigue mostrando la dirección de la excepción original) quedaron congelados bit a bit en 6 `step` consecutivos. Pedirle `continue` al simulador en ese estado lo confirma con su propio mensaje: `[Execution Fault: Core Exception 3 thrown at PC 0x00000004] / Core execution stopped.` — la CPU se niega a ejecutar cualquier instrucción más, y ni siquiera `RFT` (que debería ser la salida) la revive. La única forma de recuperarla es `reset`.

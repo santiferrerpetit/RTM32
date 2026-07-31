@@ -161,11 +161,12 @@ $RECYCLE.BIN/
 
 # --- Archivos grandes / binarios generados ---
 *.bin
+!rom.bin
 *.dat
 *.dump
 
-# ROM boot: scripts auxiliares y binario generado, todos ignorados
-# (build_rom.py / inject_rom.py ya caen en *.py de arriba; rom.bin en *.bin)
+# ROM boot: scripts auxiliares ignorados
+*.py
 
 # --- Logs y temporales ---
 *.log

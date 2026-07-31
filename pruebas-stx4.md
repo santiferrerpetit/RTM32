@@ -1,14 +1,15 @@
 # Pruebas de instrucciones STX4 (RTM32) — máquina nueva (Jul 2026, `RTM32-0.1.0`)
 
 Este documento reemplaza la versión anterior (escrita contra el binario/ISA previos, ya
-incompatibles). Cobertura: **48 casos**, todos ejecutados de verdad contra el simulador — no
+incompatibles). Cobertura: **49 casos**, todos ejecutados de verdad contra el simulador — no
 son valores calculados a mano. Los primeros 46 cubren una instrucción cada uno (Tablas B.1/B.2
-de `rtm32.pdf`); los Casos 57 y 58 amplían la verificación con barridos dirigidos (flags de
-`MUL`, casos límite de división) sobre instrucciones ya cubiertas. 40 casos confirman el
-comportamiento documentado en el manual; 6 documentan instrucciones con comportamiento
-roto/no implementado en este build; 2 documentan comportamiento real del binario que el
-manual no cubre en absoluto (flags no listadas en la Tabla B.2, y un bug de corrupción de
-`$vbr` que resulta ser sistémico y no exclusivo de `TRAP`).
+de `rtm32.pdf`); los Casos 57-59 amplían la verificación con barridos dirigidos (flags de
+`MUL`, casos límite de división, y el mecanismo de excepciones en general) sobre instrucciones
+ya cubiertas. 40 casos confirman el comportamiento documentado en el manual; 6 documentan
+instrucciones con comportamiento roto/no implementado en este build; 3 documentan
+comportamiento real del binario que el manual no cubre en absoluto (flags no listadas en la
+Tabla B.2, y el bug real detrás de la corrupción de `$vbr` — no es que `TRAP`/`RFT` estén rotos
+cada uno por su lado, es que cualquier excepción deja la CPU trabada para siempre, ver Caso 59).
 
 ## Metodología
 
@@ -228,8 +229,8 @@ Mismos casos que 27/28/30/31 pero con direccionamiento directo (opcodes `01100`,
 
 ## Caso 45 — `XORI` / `XORH` (opcode `00111`)
 
-- `XORI $t1, $zero, 0x41` (h=0; desde `$zero` sirve de carga inmediata) — `R[15]=0x00000041`. **Anduvo** (es la técnica que usa `build_rom.py` para cargar bytes).
-- `XORH $t1, $zero, 0xFFFF` (h=1) — `R[15]=0xFFFF0000`. **Anduvo** (es la técnica que usa `build_rom.py` junto con `LCI`/`XORI` para armar el puntero de UART `0xFFFFFF00`).
+- `XORI $t1, $zero, 0x41` (h=0; desde `$zero` sirve de carga inmediata) — `R[15]=0x00000041`. **Anduvo** (es la técnica que usa la ROM de boot para cargar bytes).
+- `XORH $t1, $zero, 0xFFFF` (h=1) — `R[15]=0xFFFF0000`. **Anduvo** (es la técnica que usa la ROM de boot junto con `LCI`/`XORI` para armar el puntero de UART `0xFFFFFF00`).
 
 ---
 
@@ -274,27 +275,50 @@ Verificado exhaustivamente (barridos de todos los valores posibles del campo var
 
 ## Caso 51 — `JALX` ignora el campo de selección de link register
 
-`JALX $lr<n>, 12` debería guardar `PC+4` en `$lr0`/`$lr1`/`$lr2`/`$lr3` (registros físicos 4-7) según los 2 bits `lr` del encoding (fig. 6.8). **Barrido de `lr=0,1,2,3`: en los 4 casos el valor de enlace terminó siempre en `R[3]`** (que además ni siquiera es un `$lr*` físico según la Tabla 3.1 — `$k1` es `R[3]`). El salto en sí (`PC = RA26(vlimm)`) funciona bien y coincide con lo esperado en los 4 casos. **Conclusión: el campo `lr` se decodifica pero no se usa; el destino del link queda hardcodeado.**
+`JALX $lr<n>, 12` debería guardar `PC+4` en `$lr0`/`$lr1`/`$lr2`/`$lr3` (registros físicos 4-7) según los 2 bits `lr` del encoding (fig. 6.8). **Barrido de `lr=0,1,2,3`: en los 4 casos el valor de enlace terminó siempre en `R[3]`** (que además ni siquiera es un `$lr*` físico según la Tabla 3.1 — `$k1` es `R[3]`). El salto en sí (`PC = RA26(vlimm)`) funciona bien y coincide con lo esperado en los 4 casos. **Conclusión: el campo `lr` se decodifica pero no se usa; el destino del link queda hardcodeado.** Reconfirmado con un segundo barrido independiente (encoding propio derivado directamente de la fig. 6.8, no reutilizando código de la corrida anterior): mismo resultado exacto en los 4 casos, matemática del salto perfecta, link siempre en `R[3]`.
 
 ## Caso 52 — `JALRX` ignora el campo de selección de link register
 
-Mismo patrón que `JALX`: barrido de `lr=0,1,2,3` con `JALRX $t0, 12` (`t0=0x1000`) — **el valor de enlace terminó siempre en `R[1]` (`$ra`)**, igual que un `JALR` común, y el salto (`PC=R[rs]+4·limm`) funcionó correctamente en los 4 casos. **Conclusión: `JALRX` se comporta como `JALR` liso; no hay forma de usar `$lr0-$lr3` en este build.**
+Mismo patrón que `JALX`: barrido de `lr=0,1,2,3` con `JALRX $t0, 12` (`t0=0x1000`) — **el valor de enlace terminó siempre en `R[1]` (`$ra`)**, igual que un `JALR` común, y el salto (`PC=R[rs]+4·limm`) funcionó correctamente en los 4 casos. **Conclusión: `JALRX` se comporta como `JALR` liso; no hay forma de usar `$lr0-$lr3` en este build.** Reconfirmado con un encoding derivado y validado por separado: primero se probó el layout de bits contra `JR`/`JALR` (Casos 49/50, que dieron exactamente el `PC` esperado), y recién con ese layout confirmado se extendió a `JALRX` — mismo resultado en los 4 `lr`: salto matemáticamente correcto, link fijo en `R[1]`.
 
 ## Caso 53 — `CFS` no tiene efecto observable
 
-`CFS $t0, param` (`R[rs]=S[param]`) — barrido de `param=0..7` tras `reset` (con `$vbr` conocido en `0xF0000000` visible en la sección de registros especiales). **En los 8 casos `R[14]` quedó en `0x00000000` y `CAUSE=0x00000000`** (no hubo excepción, pero tampoco hubo copia del SFR al GPR). **Conclusión: el acceso a SFR vía `CFS` no está implementado (no rompe, pero tampoco hace nada).**
+`CFS $t0, param` (`R[rs]=S[param]`) — barrido de `param=0..7` tras `reset` (con `$vbr` conocido en `0xF0000000` visible en la sección de registros especiales). **En los 8 casos `R[14]` quedó en `0x00000000` y `CAUSE=0x00000000`** (no hubo excepción, pero tampoco hubo copia del SFR al GPR). **Conclusión: el acceso a SFR vía `CFS` no está implementado (no rompe, pero tampoco hace nada).** Reconfirmado con un centinela distinto de cero (`R[14]=0xDEADBEEF` antes de ejecutar, en vez de dejarlo en 0 como en la corrida original): el registro queda intacto en `0xDEADBEEF` en los 8 params, descartando que el "no hace nada" fuera en realidad "lee un SFR que da 0".
 
 ## Caso 54 — `CTS` no tiene efecto observable
 
-`CTS $t0, param` (`S[param]=R[rs]`) con `t0=0xABCD`, seguido de `CFS $t1, param` para leer de vuelta — barrido de `param=0..7`. **En los 8 casos `R[15]` (destino del `CFS` de vuelta) quedó en `0`**, consistente con Caso 53. **Conclusión: mismo problema — `CTS`/`CFS` no están implementados en este build.**
+`CTS $t0, param` (`S[param]=R[rs]`) con `t0=0xABCD`, seguido de `CFS $t1, param` para leer de vuelta — barrido de `param=0..7`. **En los 8 casos `R[15]` (destino del `CFS` de vuelta) quedó en `0`**, consistente con Caso 53. **Conclusión: mismo problema — `CTS`/`CFS` no están implementados en este build.** Reconfirmado con centinela distinto de cero en el registro de lectura (`R[15]=0x11111111` antes del `CFS`, en vez de 0): queda intacto en `0x11111111` en los 8 params — confirma que ninguno de los dos lados del par `CTS`/`CFS` toca nada, no es casualidad de haber arrancado en 0.
 
 ## Caso 55 — `TRAP` deja el estado inconsistente
 
-`TRAP 3` (`EPC=PC+4; PC=M[$vbr+3·4]`) ejecutado con `$vbr` en su valor de reset (`0xF0000000`, no mapeado a RAM en este setup sin `-k`/`-r` funcional). Resultado observado: **`PC` avanzó a `0x00000004` como una instrucción normal (no saltó a ningún vector), `CAUSE` pasó a `0x00000006`, y — inesperadamente — `VBR` cambió de `0xF0000000` a `0x00000002`.** El manual documenta la lectura del vector como indirecta (`M[...]`, un puntero en memoria, no un salto directo); al no haber memoria mapeada en `$vbr`, la lectura del vector parece fallar internamente y corromper `$vbr` en el proceso — un bug real, no un error de encoding de este test (probado con varios valores de `param`, mismo patrón). **Conclusión: `TRAP` es intestable de punta a punta en esta configuración (sin kernel RAM en `$vbr`) y además dejó `$vbr` en un valor inconsistente.**
+`TRAP 3` (`EPC=PC+4; PC=M[$vbr+3·4]`) ejecutado con `$vbr` en su valor de reset (`0xF0000000`, no mapeado a RAM en este setup sin `-k`/`-r` funcional). Resultado observado: **`PC` avanzó a `0x00000004` como una instrucción normal (no saltó a ningún vector), `CAUSE` pasó a `0x00000006`, y `VBR` cambió de `0xF0000000` a `0x00000002`.** Reconfirmado con barrido completo `param=0..7`: mismo `CAUSE=0x6` y mismo `VBR=0x00000002` en los 8 casos, sin excepción. Dato nuevo que la corrida original no había registrado: **`$epc` nunca se actualiza — queda en `0x00000000` en los 8 casos**, pese a que la fórmula documentada dice `EPC=PC+4` *antes* de intentar el salto; ese paso tampoco se ejecuta. **Conclusión: `TRAP` no escribe `$epc`, no salta a ningún vector, y corrompe `$vbr` a `0x00000002` siempre — y como muestra el Caso 59, encima deja la CPU completamente trabada después.**
 
-## Caso 56 — `RFT` no avanza el PC
+## Caso 56 — `RFT` funciona bien solo; el problema real es que nada revive la CPU después de una excepción (ver Caso 59)
 
-`RFT` (`PC=EPC`, `$psw` restaurado desde `$esr`) ejecutado en `0x00000200` con `EPC=0` (valor de reset). El debugger no expone un target `set epc`/`set vbr` directo (`Error: Unknown assignment target 'epc'`), así que se probó tal cual. Resultado: **tras `step 1`, `PC` se quedó exactamente en `0x00000200`** — ni saltó a `EPC=0` como documenta el manual, ni avanzó a `0x00000204` como cualquier instrucción normal. **Conclusión: `RFT` no hace ningún progreso visible en este build; no se pudo confirmar el comportamiento documentado.**
+La conclusión original de este caso ("`RFT` no avanza el PC") estaba midiendo el síntoma equivocado. Aislando la variable — ejecutando `RFT` en una sesión donde **todavía no ocurrió ninguna excepción** —, `RFT` funciona exactamente como documenta el manual:
+
+- `reset`, se inyecta `RFT` en `0x00000200`, `set pc 0x00000200`, `step 1`. `$epc` sigue en su valor de reset (`0x00000000`). Resultado: **`PC` pasa a `0x00000000`** (`PC=EPC`, correcto) **y el modo de ejecución cambia de `KERNEL` a `USER`** (`$psw` se restaura desde `$esr`, que en su valor de reset vale `0`, es decir bit `M=0`). Reproducido 3/3 veces, y también repitiendo el mismo test arrancando desde `PC=0x00000000` en vez de `0x00000200` — mismo resultado en ambos casos.
+
+El test original ejecutaba `RFT` en una sesión donde ya se había corrido código antes (u ocurría después de tocar registros de excepción), lo cual — según el Caso 59 — ya deja la CPU en el estado trabado del que ninguna instrucción, ni siquiera `RFT`, puede sacarla. **Conclusión revisada: `RFT` en sí mismo funciona (salta a `$epc`, restaura `$psw` desde `$esr`). No es la instrucción rota — lo roto es que, una vez que cualquier excepción disparó, no hay forma de volver, ni con `RFT` ni con nada (Caso 59).**
+
+## Caso 59 — Cualquier excepción deja la CPU trabada para siempre (bug raíz detrás de los Casos 55, 56 y 58)
+
+Con la corrupción de `$vbr` ya documentada (Casos 55 y 58) surgió la pregunta obvia: ¿la CPU sigue funcionando después, solo que sin saltar a ningún handler, o se rompe algo más de fondo? Se armó una secuencia de instrucciones sencillas para averiguarlo: un `DIV` por cero en `0x0`, seguido de cinco `ADD $0,$0,$0` inofensivas en `0x4`, `0x8`, `0xC`, `0x10`, `0x14`.
+
+- **Paso 1** (`DIV 17/0` en `0x0`): como en el Caso 58, `PC=0x00000004`, `CAUSE=0x00000003`, `$vbr=0x00000002`.
+- **Pasos 2 a 6** (seis `step 1` consecutivos, cada uno debería ejecutar una de las `ADD` en `0x4`/`0x8`/`0xC`/`0x10`/`0x14`): **`PC`, `CAUSE`, `$vbr`, y hasta el campo `Last Memory Operation` (que sigue reportando `Address: 0x00000000, Type: FETCH` — la *primera* instrucción, la del `DIV`) quedan bit a bit idénticos en los 6 casos.** El simulador no vuelve a buscar una instrucción nueva ni una sola vez.
+- Probar `continue` en ese mismo estado (en vez de `step`) es más elocuente que cualquier `registers`, porque el propio debugger imprime el diagnóstico interno:
+  ```
+  Continuing execution...
+
+  [Execution Fault: Core Exception 3 thrown at PC 0x00000004]
+  Core execution stopped. Current PC: 0x00000004
+  ```
+  (`Core Exception 3` coincide con el `CAUSE=0x3` de excepciones aritméticas — para `TRAP`, que da `CAUSE=0x6`, el mensaje sería `Core Exception 6`, no probado explícitamente pero coherente con el patrón.)
+
+Se repitió la misma secuencia arrancando con `TRAP` en vez de `DIV` por cero, intercalando una `ADD` inocua entre el `TRAP` y un `RFT` final: mismo resultado — ninguna de las tres instrucciones después del `TRAP` (ni la `ADD`, ni el `RFT`) mueve la aguja un solo bit.
+
+**Conclusión: el bug no es que `TRAP`, `RFT` o las excepciones aritméticas estén rotas cada una por separado. Es que el mecanismo de despacho de excepciones, al fallar (no hay memoria mapeada en `$vbr` para leer el vector), deja la CPU en un estado de falla permanente e irrecuperable — ni `step` ni `continue` ni `RFT` (que debería ser exactamente la instrucción diseñada para salir de ahí) logran que ejecute una instrucción más.** La única salida observada es `reset`. Esto reencuadra los Casos 55, 56 y 58: no son fallas independientes de cada instrucción, son todos síntomas del mismo bug raíz en el manejo de excepciones.
 
 ## Caso 57 — `MUL` setea flags `C`/`V` no listadas en la Tabla B.2
 
@@ -334,10 +358,11 @@ División por cero (con y sin signo), resto por cero (con y sin signo), y el cas
 | I-type inmediatos extendidos  | `ANDI LCI ANI ANH ORI ORH XORI XORH`        | ✅ 8/8                                |
 | Branches                      | `BEQ BNE BLT BGE BLTU BGEU`                 | ✅ 6/6                                |
 | Saltos simples                | `J JAL JR JALR`                             | ✅ 4/4                                |
-| Saltos multi-link             | `JALX JALRX`                                | ⚠️ saltan bien, `lr` ignorado         |
-| SFR                           | `CFS CTS`                                   | ❌ no implementados                   |
-| Excepciones                   | `TRAP RFT`                                  | ❌ rotos / intestables sin kernel RAM |
+| Saltos multi-link             | `JALX JALRX`                                | ⚠️ saltan bien, `lr` ignorado (reconfirmado con encoding propio) |
+| SFR                           | `CFS CTS`                                   | ❌ no implementados (reconfirmado con centinela ≠0) |
+| Excepciones                   | `TRAP`                                      | ❌ no escribe `$epc`, no salta, corrompe `$vbr` |
+| Excepciones                   | `RFT`                                       | ✅ funciona solo (`PC=EPC`, `$psw` desde `$esr`) — ver bug raíz abajo |
 | Flags no documentadas         | `MUL` (`C`/`V`)                             | ⚠️ funcionan, pero Tabla B.2 no las lista |
-| Excepciones aritméticas       | `DIV DIVU REST RESTU` (div/0, resto/0, `INT_MIN/-1`) | ❌ mismo bug de corrupción de `$vbr` que `TRAP` |
+| **Bug raíz de excepciones**   | cualquier excepción (`TRAP`, `DIV`/0, `DIVU`/0, `REST`/0, `RESTU`/0, `INT_MIN/-1`) | ❌ **CPU queda trabada para siempre, irrecuperable ni con `RFT`** |
 
-**69 instrucciones del ISA cubiertas** (todo Tabla B.1 + B.2 salvo las reinterpretaciones triviales de opcode ya cubiertas por sus pares). 61 confirman el manual al 100%, 2 saltan correctamente pero con una limitación real (link register fijo), 4 no funcionan como está documentado. Los Casos 57-58 suman verificación dirigida sobre instrucciones ya cubiertas (`MUL`, `DIV`, `DIVU`, `REST`, `RESTU`): confirman que `MUL` setea flags `C`/`V` que la Tabla B.2 no lista, y que el bug de corrupción de `$vbr` documentado para `TRAP` es en realidad sistémico — se dispara igual ante cualquier excepción aritmética (división por cero, resto por cero, overflow de división).
+**69 instrucciones del ISA cubiertas** (todo Tabla B.1 + B.2 salvo las reinterpretaciones triviales de opcode ya cubiertas por sus pares). 61 confirman el manual al 100%, 2 saltan correctamente pero con una limitación real (link register fijo), 4 no funcionan como está documentado (aunque una de esas cuatro, `RFT`, resultó funcionar bien de forma aislada — ver Caso 56). Los Casos 57-59 suman verificación dirigida sobre instrucciones ya cubiertas: `MUL` setea flags `C`/`V` que la Tabla B.2 no lista (Caso 57); y lo que parecía ser dos bugs sueltos de `TRAP` y `RFT` es en realidad un solo bug raíz — cualquier excepción (`TRAP` o aritmética) deja la CPU en un estado de falla permanente del que no hay retorno, confirmado tanto con `step` (la CPU deja de buscar instrucciones nuevas) como con `continue` (el propio simulador reporta `Execution Fault: Core Exception N thrown` y se niega a seguir) — Casos 58 y 59.
